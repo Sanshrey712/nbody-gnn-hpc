@@ -1,0 +1,23 @@
+# Core dependencies
+numpy>=1.21.0
+numba>=0.56.0
+scipy>=1.7.0
+
+# PyTorch (CPU version - change to torch+cuda for GPU)
+torch>=2.0.0
+torch-geometric>=2.3.0
+
+# Visualization
+matplotlib>=3.5.0
+seaborn>=0.12.0
+
+# Utilities
+tqdm>=4.64.0
+h5py>=3.7.0
+pyyaml>=6.0
+
+# For parallel processing
+joblib>=1.2.0
+
+# Data Export
+pandas>=1.4.0

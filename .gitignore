@@ -1,0 +1,35 @@
+# Ignore data and model files
+data/
+models/*.pt
+models/*.pth
+
+# Results (keep structure, ignore contents)
+results/*.json
+results/plots/
+
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+*.egg-info/
+.eggs/
+
+# Jupyter
+.ipynb_checkpoints/
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Virtual environment
+venv/
+.venv/
+env/
+
+# IDE
+.idea/
+.vscode/
+*.swp
+*.swo
