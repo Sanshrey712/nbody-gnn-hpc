@@ -1,9 +1,0 @@
-nohup: ignoring input
-Traceback (most recent call last):
-  File "/home/ryzen/Desktop/AI-HPC/scripts/run_demo.py", line 23, in <module>
-    from ai.config import get_config
-  File "/home/ryzen/Desktop/AI-HPC/src/ai/__init__.py", line 2, in <module>
-    from .model import NBodyGNN, NBodyLSTM
-  File "/home/ryzen/Desktop/AI-HPC/src/ai/model.py", line 10, in <module>
-    import torch
-ModuleNotFoundError: No module named 'torch'

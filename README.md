@@ -1,92 +1,86 @@
-# AI-HPC Hybrid N-Body Simulation
+# AI-HPC: N-Body GNN Simulation
 
-**AI-Accelerated N-Body Gravitational Simulation using HPC Checkpointing**
+**AI-Accelerated N-Body Gravitational Simulation using Graph Neural Networks**
 
-A hybrid high-performance computing and AI project that uses HPC to simulate N-body gravitational systems and trains neural networks to predict future states.
+An academic project that uses HPC simulation to generate N-body gravitational trajectories and trains a Graph Neural Network (GNN) to predict future particle states.
 
-## Features
+## Optimal Configuration
 
-- **HPC Simulation**: Optimized N-body with Barnes-Hut O(N log N) algorithm
-- **JIT Compilation**: Numba-accelerated computations for near-C performance
-- **Parallel Processing**: Multiprocessing for CPU parallelization
-- **AI Prediction**: Graph Neural Network (GNN) for physics-aware state prediction
-- **Validation**: Comprehensive accuracy metrics and visualizations
+**Designed for 32GB RAM / 12GB VRAM (e.g., RTX 3060/4070)**
+
+- **Particles:** 2000
+- **Simulations:** 200
+- **Steps:** 400
+- **Batch Size:** 8 (optimized for VRAM)
+- **Epochs:** 100
 
 ## Quick Start
 
-### 1. Automated Pipeline (Recommended)
-This runs the entire workflow (Data Generation -> Training -> Evaluation) with hardware-optimized settings.
+### Full Pipeline (Recommended)
 
 ```bash
-# For HPC Nodes (AMD + NVIDIA GPU)
-# Optimized for 32 threads + 12GB VRAM + Batch Size 4 + Sparse GNN
-python scripts/run_demo.py --profile hpc
-
-# For Mac (M-Series)
-# Optimized for Unified Memory + MPS + 4 cores
-python scripts/run_demo.py --profile mac
+# Runs: Data Generation → Train GNN → Evaluate
+python scripts/run_demo.py
 ```
 
-### 2. Manual Execution
-You can still run individual steps if needed:
+### Manual Steps
 
 ```bash
-# Generate Data (CPU Heavy)
-python scripts/generate_data.py --particles 1000 --simulations 50
+# 1. Generate simulation data (high fidelity for 32GB RAM)
+python scripts/generate_data.py --particles 2000 --simulations 200 --steps 400
 
-# Train GNN (GPU Heavy)
-# Note: Use --profile hpc to load the safe VRAM settings automatically!
-python scripts/train_model.py --profile hpc --epochs 100
+# 2. Train GNN (tuned for 12GB VRAM)
+python scripts/train_model.py --epochs 100 --batch-size 8
 
-# Evaluate
-python scripts/evaluate.py --profile hpc
+# 3. Evaluate against HPC ground truth
+python scripts/evaluate.py
 ```
+
+## Features
+
+- **N-Body Simulation**: Direct O(N²) + Barnes-Hut O(N log N) physics engine
+- **JIT-Compiled**: Numba-accelerated for near-C performance
+- **GNN Prediction**: Physics-aware Graph Neural Network with message-passing
+- **Physics-Informed Loss**: Enforces energy and momentum conservation
+- **Evaluation**: RMSE, MAE, energy/momentum conservation metrics
 
 ## Project Structure
 
 ```
 AI-HPC/
 ├── src/
-│   ├── hpc/                # HPC simulation
-│   │   ├── nbody.py        # N-body physics engine
-│   │   ├── barnes_hut.py   # Barnes-Hut tree algorithm
-│   │   └── checkpoint.py   # State serialization
+│   ├── hpc/                # Physics simulation
+│   │   ├── nbody.py        # N-body engine (Numba JIT)
+│   │   ├── barnes_hut.py   # Barnes-Hut octree
+│   │   └── checkpoint.py   # HDF5 data I/O
 │   ├── ai/                 # Neural network
 │   │   ├── model.py        # GNN architecture
 │   │   ├── train.py        # Training pipeline
-│   │   └── predict.py      # Inference
-│   └── utils/              # Utilities
+│   │   ├── predict.py      # Inference & rollout
+│   │   └── config.py       # Configuration
+│   └── utils/
 │       ├── visualization.py
 │       └── metrics.py
-├── scripts/                # Runnable scripts
+├── scripts/
+│   ├── run_demo.py         # Full pipeline
+│   ├── generate_data.py    # Data generation
+│   ├── train_model.py      # Training
+│   └── evaluate.py         # Evaluation
 ├── data/                   # Generated HPC data
-├── models/                 # Saved AI models
-└── results/                # Plots and metrics
-```
-
-## Workflow
-
-```
-┌────────────────┐    ┌─────────────────┐    ┌────────────────┐
-│  HPC Simulation│ -> │  Train AI Model │ -> │  AI Prediction │
-│  (Barnes-Hut)  │    │  (GNN/LSTM)     │    │  (Fast!)       │
-└────────────────┘    └─────────────────┘    └────────────────┘
+├── models/                 # Saved models
+└── results/                # Plots & metrics
 ```
 
 ## Requirements
 
+```
+pip install -r requirements.txt
+```
+
 - Python 3.8+
-- NumPy, Numba (HPC)
-- PyTorch, PyTorch Geometric (AI)
-- Matplotlib (Visualization)
-
-## Accuracy Metrics
-
-The project computes:
-- **RMSE**: Root Mean Square Error of position/velocity predictions
-- **MAE**: Mean Absolute Error
-- **Energy Conservation**: Validates physical plausibility
-- **Trajectory Divergence**: Measures prediction quality over time
+- PyTorch + PyTorch Geometric (GPU recommended)
+- NumPy, Numba, SciPy
+- h5py, matplotlib
 
 ## License
 

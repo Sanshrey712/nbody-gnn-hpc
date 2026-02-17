@@ -283,6 +283,12 @@ class CheckpointManager:
         
         return sorted(checkpoints)
     
+    def trajectory_exists(self, name: str) -> bool:
+        """Check if a trajectory file exists."""
+        filepath = self.checkpoint_dir / f"{name}_trajectory.h5"
+        return filepath.exists()
+
+    
     def delete_checkpoint(self, name: str) -> bool:
         """Delete a checkpoint."""
         for ext in ['.h5', '.npz', '_trajectory.h5']:
@@ -296,7 +302,8 @@ class CheckpointManager:
 def create_training_dataset(trajectories: List[Dict],
                            output_path: str,
                            sequence_length: int = 10,
-                           stride: int = 1) -> str:
+                           stride: int = 1,
+                           masses: Optional[np.ndarray] = None) -> str:
     """
     Create a training dataset from multiple trajectories.
     
@@ -382,6 +389,10 @@ def create_training_dataset(trajectories: List[Dict],
         f.attrs['sequence_length'] = sequence_length
         f.attrs['n_samples'] = total_samples
         f.attrs['created_at'] = datetime.now().isoformat()
+        
+        # Save masses if provided
+        if masses is not None:
+            f.create_dataset('masses', data=masses.astype(np.float32))
     
     print(f"Created dataset with {total_samples} samples at {output_path}")
     return str(output_path)

@@ -80,18 +80,26 @@ def compute_energy_error(positions: np.ndarray,
     n_steps, n_particles, _ = positions.shape
     energies = np.zeros(n_steps)
     
+    m_matrix = np.outer(masses, masses)
+    
     for t in range(n_steps):
         # Kinetic energy
-        v_squared = np.sum(velocities[t] ** 2, axis=1)
-        kinetic = 0.5 * np.sum(masses * v_squared)
+        kinetic = 0.5 * np.sum(masses * np.sum(velocities[t] ** 2, axis=1))
         
-        # Potential energy
-        potential = 0.0
-        for i in range(n_particles):
-            for j in range(i + 1, n_particles):
-                r = np.linalg.norm(positions[t, i] - positions[t, j])
-                r = np.sqrt(r**2 + softening**2)
-                potential -= G * masses[i] * masses[j] / r
+        # Potential energy (Vectorized)
+        # Compute pairwise distances: (n, n)
+        diff = positions[t][:, np.newaxis, :] - positions[t][np.newaxis, :, :]
+        dist_sq = np.sum(diff ** 2, axis=-1)
+        
+        # Add softening and compute 1/r
+        inv_r = 1.0 / np.sqrt(dist_sq + softening ** 2)
+        
+        # Mask diagonal (self-interactions)
+        np.fill_diagonal(inv_r, 0)
+        
+        # Potential energy is sum of G * m1 * m2 / r
+        # 0.5 because we count each pair (i,j) and (j,i)
+        potential = -0.5 * G * np.sum(m_matrix * inv_r)
         
         energies[t] = kinetic + potential
     

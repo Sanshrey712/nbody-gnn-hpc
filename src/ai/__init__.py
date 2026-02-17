@@ -1,4 +1,4 @@
 # AI Module
-from .model import NBodyGNN, NBodyLSTM
+from .model import NBodyGNN
 from .train import Trainer
 from .predict import Predictor

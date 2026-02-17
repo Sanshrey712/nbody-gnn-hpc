@@ -1,19 +1,18 @@
 #!/usr/bin/env python3
 """
-Generate HPC Training Data for AI Model.
+Generate Training Data for N-Body GNN.
 
-Runs N-body simulations and saves trajectories for training.
+Runs N-body simulations and saves trajectories as HDF5 datasets.
 
 Usage:
-    python scripts/generate_data.py --particles 1000 --simulations 50 --steps 200
+    python scripts/generate_data.py --particles 500 --simulations 50 --steps 200
 """
 
 import argparse
 import sys
 import os
 
-# Limit threads per process to prevent oversubscription when running many workers
-# This is CRITICAL for performance when using Numba parallel=True in a multiprocessing context
+# Limit threads per process to prevent oversubscription with Numba parallel
 os.environ['OMP_NUM_THREADS'] = '1'
 os.environ['NUMBA_NUM_THREADS'] = '1'
 os.environ['MKL_NUM_THREADS'] = '1'
@@ -24,7 +23,6 @@ from pathlib import Path
 from tqdm import tqdm
 import multiprocessing as mp
 
-# Add src to path
 sys.path.insert(0, str(Path(__file__).parent.parent / 'src'))
 
 from hpc.nbody import NBodySimulator
@@ -33,18 +31,21 @@ from hpc.checkpoint import CheckpointManager, create_training_dataset
 
 def generate_single_simulation(args):
     """Generate a single simulation."""
-    sim_id, n_particles, n_steps, save_interval, box_size, seed = args
+    sim_id, n_particles, n_steps, save_interval, box_size, seed, shared_masses = args
     
-    # Create simulator with unique seed
     sim = NBodySimulator(
         n_particles=n_particles,
         box_size=box_size,
         dt=0.001,
         seed=seed,
-        use_barnes_hut=(n_particles > 500)  # Use Barnes-Hut for large sims
+        use_barnes_hut=(n_particles > 500)
     )
     
-    # Run simulation
+    # Override with shared masses so all sims use the same particle masses
+    if shared_masses is not None:
+        sim.masses = shared_masses.copy()
+        sim.accelerations = sim._compute_accelerations()  # Recompute with correct masses
+    
     states = sim.run(n_steps, save_interval=save_interval, verbose=False)
     
     return {
@@ -58,10 +59,10 @@ def generate_single_simulation(args):
 
 
 def main():
-    parser = argparse.ArgumentParser(description='Generate HPC training data')
-    parser.add_argument('--particles', '-n', type=int, default=100,
+    parser = argparse.ArgumentParser(description='Generate N-body training data')
+    parser.add_argument('--particles', '-n', type=int, default=500,
                        help='Number of particles per simulation')
-    parser.add_argument('--simulations', '-s', type=int, default=20,
+    parser.add_argument('--simulations', '-s', type=int, default=50,
                        help='Number of simulations to run')
     parser.add_argument('--steps', type=int, default=200,
                        help='Timesteps per simulation')
@@ -73,7 +74,7 @@ def main():
                        help='Number of parallel workers')
     parser.add_argument('--output-dir', '-o', type=str, default='./data',
                        help='Output directory')
-    parser.add_argument('--sequence-length', type=int, default=10,
+    parser.add_argument('--sequence-length', type=int, default=5,
                        help='Sequence length for training samples')
     parser.add_argument('--seed', type=int, default=42,
                        help='Random seed base')
@@ -82,30 +83,33 @@ def main():
     
     args = parser.parse_args()
     
-    # Setup
     output_dir = Path(args.output_dir)
     output_dir.mkdir(parents=True, exist_ok=True)
     
     checkpoint_dir = output_dir / 'checkpoints'
     checkpoint_dir.mkdir(exist_ok=True)
     
-    n_workers = args.workers or min(mp.cpu_count(), 4)  # Limit workers to save memory
+    n_workers = args.workers or min(mp.cpu_count(), 4)
     
     print("=" * 60)
-    print("HPC DATA GENERATION")
+    print("N-BODY DATA GENERATION")
     print("=" * 60)
     print(f"  Particles:     {args.particles}")
     print(f"  Simulations:   {args.simulations}")
     print(f"  Steps:         {args.steps}")
     print(f"  Workers:       {n_workers}")
     print(f"  Output Dir:    {output_dir}")
-    print(f"  Batch Size:    {args.batch_size}")
     print("=" * 60)
     
     manager = CheckpointManager(str(checkpoint_dir))
     
-    # Process simulations in batches to save memory
-    all_trajectories_for_dataset = []
+    # Pre-generate shared masses so ALL simulations use the same particle masses.
+    # This ensures the physics loss (which uses a single mass array) is exact.
+    rng = np.random.RandomState(args.seed)
+    shared_masses = rng.uniform(1e10, 1e12, args.particles).astype(np.float32)
+    print(f"  Shared masses: range [{shared_masses.min():.2e}, {shared_masses.max():.2e}]")
+    
+    all_trajectories = []
     n_batches = (args.simulations + args.batch_size - 1) // args.batch_size
     
     print(f"\nProcessing {args.simulations} simulations in {n_batches} batches...")
@@ -117,29 +121,36 @@ def main():
         
         print(f"\n--- Batch {batch_idx + 1}/{n_batches} (sims {start_idx}-{end_idx-1}) ---")
         
-        # Prepare simulation arguments for this batch
-        sim_args = [
-            (i, args.particles, args.steps, args.save_interval, 
-             args.box_size, args.seed + i)
-            for i in range(start_idx, end_idx)
-        ]
+        sim_args = []
+        skipped = 0
         
-        # Run simulations in parallel
-        if n_workers > 1 and batch_size > 1:
+        for i in range(start_idx, end_idx):
+            if manager.trajectory_exists(f"sim_{i:04d}"):
+                skipped += 1
+                continue
+            sim_args.append((
+                i, args.particles, args.steps, args.save_interval, 
+                args.box_size, args.seed + i, shared_masses
+            ))
+        
+        if not sim_args:
+            print(f"  Already complete (skipped {skipped})")
+            continue
+        
+        print(f"  Running {len(sim_args)} sims (skipped {skipped})...")
+        
+        if n_workers > 1 and len(sim_args) > 1:
             with mp.Pool(n_workers) as pool:
-                batch_trajectories = list(tqdm(
+                batch_trajs = list(tqdm(
                     pool.imap(generate_single_simulation, sim_args),
-                    total=batch_size,
-                    desc="Simulations"
+                    total=len(sim_args), desc="Simulations"
                 ))
         else:
-            batch_trajectories = []
-            for sim_arg in tqdm(sim_args, desc="Simulations"):
-                batch_trajectories.append(generate_single_simulation(sim_arg))
+            batch_trajs = [generate_single_simulation(a) for a in tqdm(sim_args, desc="Simulations")]
         
-        # Save trajectories to disk immediately
-        for i, traj in enumerate(tqdm(batch_trajectories, desc="Saving", leave=False)):
-            sim_idx = start_idx + i
+        # Save checkpoints
+        for i, traj in enumerate(batch_trajs):
+            sim_idx = sim_args[i][0]
             manager.save_trajectory(
                 states=[{
                     'positions': traj['positions'][t],
@@ -150,68 +161,50 @@ def main():
                     'step': t
                 } for t in range(traj['n_steps'])],
                 name=f"sim_{sim_idx:04d}",
-                metadata={
-                    'n_particles': args.particles,
-                    'n_steps': args.steps,
-                    'box_size': args.box_size,
-                    'seed': args.seed + sim_idx
-                }
+                metadata={'n_particles': args.particles, 'seed': args.seed + sim_idx}
             )
         
-        # Keep lightweight trajectory data for dataset creation
-        for traj in batch_trajectories:
-            all_trajectories_for_dataset.append({
+        # Keep lightweight data for dataset creation
+        for traj in batch_trajs:
+            all_trajectories.append({
                 'positions': traj['positions'],
                 'velocities': traj['velocities'],
+                'masses': traj['masses'],
                 'n_steps': traj['n_steps']
             })
-            # Free the heavy arrays we don't need
-            del traj['accelerations']
-            del traj['masses']
-            del traj['times']
         
-        # Clear batch to free memory
-        del batch_trajectories
-        import gc
-        gc.collect()
+        del batch_trajs
+        import gc; gc.collect()
     
-    print(f"\nGenerated {len(all_trajectories_for_dataset)} trajectories")
+    print(f"\nGenerated {len(all_trajectories)} trajectories")
     
-    # Create training dataset
-    print("\nCreating training dataset...")
-    dataset_path = output_dir / 'training_dataset.h5'
+    # Create training dataset (80/20 split)
+    print("\nCreating training datasets...")
     
-    create_training_dataset(
-        all_trajectories_for_dataset,
-        str(dataset_path),
-        sequence_length=args.sequence_length,
-        stride=1
-    )
+    n_train = int(0.8 * len(all_trajectories))
     
-    # Split into train/val
-    print("\nSplitting into train/val...")
-    n_train = int(0.8 * len(all_trajectories_for_dataset))
+    # Use masses from first trajectory (all sims have the same particle count)
+    masses = all_trajectories[0].get('masses', None)
     
     create_training_dataset(
-        all_trajectories_for_dataset[:n_train],
+        all_trajectories[:n_train],
         str(output_dir / 'train_dataset.h5'),
-        sequence_length=args.sequence_length,
-        stride=1
+        sequence_length=args.sequence_length, stride=1,
+        masses=masses
     )
     
     create_training_dataset(
-        all_trajectories_for_dataset[n_train:],
+        all_trajectories[n_train:],
         str(output_dir / 'val_dataset.h5'),
-        sequence_length=args.sequence_length,
-        stride=1
+        sequence_length=args.sequence_length, stride=1,
+        masses=masses
     )
     
     print("\n" + "=" * 60)
     print("DATA GENERATION COMPLETE")
     print("=" * 60)
-    print(f"  Trajectories saved to: {checkpoint_dir}")
-    print(f"  Training dataset:      {output_dir / 'train_dataset.h5'}")
-    print(f"  Validation dataset:    {output_dir / 'val_dataset.h5'}")
+    print(f"  Train dataset: {output_dir / 'train_dataset.h5'}")
+    print(f"  Val dataset:   {output_dir / 'val_dataset.h5'}")
     print("=" * 60)
 
 

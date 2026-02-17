@@ -1,9 +1,9 @@
 #!/usr/bin/env python3
 """
-Evaluate AI Model Against HPC Ground Truth.
+Evaluate GNN Model Against HPC Ground Truth.
 
 Usage:
-    python scripts/evaluate.py --model-path models/best_model.pt
+    python scripts/evaluate.py
 """
 
 import argparse
@@ -12,39 +12,27 @@ from pathlib import Path
 import json
 import numpy as np
 
-# Add src to path
 sys.path.insert(0, str(Path(__file__).parent.parent / 'src'))
 
 from hpc.nbody import NBodySimulator
-from hpc.checkpoint import CheckpointManager
-from ai.model import create_model
-from ai.predict import Predictor, compare_with_hpc
+from ai.model import NBodyGNN
+from ai.predict import Predictor
 from utils.metrics import compute_all_metrics, format_metrics_report
 from utils.visualization import Visualizer
 
 
 def main():
-    parser = argparse.ArgumentParser(description='Evaluate AI Model')
-    parser.add_argument('--model-path', '-m', type=str, default='./models/best_model.pt',
-                       help='Path to trained model')
-    parser.add_argument('--config-path', '-c', type=str, default='./models/config.json',
-                       help='Path to model config')
-    parser.add_argument('--data-dir', '-d', type=str, default='./data',
-                       help='Data directory')
-    parser.add_argument('--output-dir', '-o', type=str, default='./results',
-                       help='Output directory')
-    parser.add_argument('--n-test-sims', type=int, default=5,
-                       help='Number of test simulations')
-    parser.add_argument('--particles', '-n', type=int, default=100,
-                       help='Particles for new test simulations')
-    parser.add_argument('--steps', type=int, default=100,
-                       help='Steps to predict')
-    parser.add_argument('--seed', type=int, default=9999,
-                       help='Random seed for test simulations')
+    parser = argparse.ArgumentParser(description='Evaluate GNN Model')
+    parser.add_argument('--model-path', '-m', type=str, default='./models/best_model.pt')
+    parser.add_argument('--config-path', '-c', type=str, default='./models/config.json')
+    parser.add_argument('--output-dir', '-o', type=str, default='./results')
+    parser.add_argument('--n-test-sims', type=int, default=10)
+    parser.add_argument('--particles', '-n', type=int, default=200)
+    parser.add_argument('--steps', type=int, default=400)
+    parser.add_argument('--seed', type=int, default=9999)
     
     args = parser.parse_args()
     
-    # Paths
     model_path = Path(args.model_path)
     config_path = Path(args.config_path)
     output_dir = Path(args.output_dir)
@@ -55,68 +43,62 @@ def main():
         sys.exit(1)
     
     print("=" * 60)
-    print("AI MODEL EVALUATION")
+    print("GNN MODEL EVALUATION")
     print("=" * 60)
     
     # Load config
     if config_path.exists():
         with open(config_path) as f:
             config = json.load(f)
-        model_type = config['model_type']
         model_config = config['model_config']
-        print(f"  Model Type: {model_type}")
+        k_neighbors = config.get('training_config', {}).get('k_neighbors', 40)
     else:
-        print("Warning: Config not found, defaulting to LSTM")
-        model_type = 'lstm'
         model_config = {
-            'input_dim': 6,
-            'hidden_dim': 128,
-            'n_layers': 3,
-            'output_dim': 6
+            'node_input_dim': 7,
+            'hidden_dim': 256,
+            'n_layers': 6,
+            'output_dim': 6,
+            'dropout': 0.1,
         }
+        k_neighbors = 40
     
-    # Create model and predictor
+    # Create predictor
     print("\nLoading model...")
-    model = create_model(model_type, **model_config)
-    predictor = Predictor(model, str(model_path))
+    model = NBodyGNN(**model_config)
+    predictor = Predictor(model, str(model_path), k_neighbors=k_neighbors)
     
-    # Generate test simulations (fresh data not seen during training)
-    print(f"\nGenerating {args.n_test_sims} test simulations...")
+    # Run test simulations
+    print(f"\nRunning {args.n_test_sims} test simulations ({args.particles} particles, {args.steps} steps)...")
     test_results = []
-    
     visualizer = Visualizer(str(output_dir / 'plots'))
+    
+    # Use shared masses matching training (same seed=42 and range as generate_data.py)
+    rng = np.random.RandomState(42)
+    shared_masses = rng.uniform(1e10, 1e12, args.particles).astype(np.float32)
+    
+    seq_len = 5  # Start prediction after this many steps
     
     for i in range(args.n_test_sims):
         print(f"\n  Test {i+1}/{args.n_test_sims}")
         
-        # Run HPC simulation
+        # Run HPC ground truth
         sim = NBodySimulator(
             n_particles=args.particles,
-            box_size=10.0,
-            dt=0.001,
+            box_size=10.0, dt=0.001,
             seed=args.seed + i
         )
+        # Override with shared masses (same as training)
+        sim.masses = shared_masses.copy()
+        sim.accelerations = sim._compute_accelerations()
         hpc_states = sim.run(args.steps, save_interval=1, verbose=False)
         
-        # Convert to trajectory format
         hpc_trajectory = {
             'positions': np.stack([s['positions'] for s in hpc_states]),
             'velocities': np.stack([s['velocities'] for s in hpc_states]),
             'masses': hpc_states[0]['masses']
         }
         
-        # Create history for LSTM
-        seq_len = 10
-        if len(hpc_states) > seq_len:
-            history = np.stack([
-                np.concatenate([hpc_states[j]['positions'], 
-                               hpc_states[j]['velocities']], axis=-1)
-                for j in range(seq_len)
-            ])
-        else:
-            history = None
-        
-        # AI prediction
+        # AI prediction starting from step seq_len
         init_pos = hpc_trajectory['positions'][seq_len]
         init_vel = hpc_trajectory['velocities'][seq_len]
         masses = hpc_trajectory['masses']
@@ -124,59 +106,61 @@ def main():
         prediction_steps = args.steps - seq_len - 1
         
         ai_result = predictor.predict_rollout(
-            init_pos, init_vel, masses, 
-            n_steps=prediction_steps,
-            history=history
+            init_pos, init_vel, masses, n_steps=prediction_steps
         )
         
-        # Get corresponding HPC ground truth
+        # Compare with ground truth
         hpc_pos = hpc_trajectory['positions'][seq_len:seq_len+prediction_steps+1]
         hpc_vel = hpc_trajectory['velocities'][seq_len:seq_len+prediction_steps+1]
         
-        # Compute metrics
         metrics = compute_all_metrics(
             ai_result['positions'][:len(hpc_pos)],
             ai_result['velocities'][:len(hpc_vel)],
-            hpc_pos,
-            hpc_vel,
-            masses
+            hpc_pos, hpc_vel, masses
         )
         
         test_results.append(metrics)
-        
         print(f"    Position RMSE: {metrics['position_rmse']:.6e}")
         print(f"    Velocity RMSE: {metrics['velocity_rmse']:.6e}")
         
-        # Visualize first test case
+        # Visualize first test
         if i == 0:
-            # Trajectory comparison
             visualizer.plot_comparison(
-                hpc_pos, 
-                ai_result['positions'][:len(hpc_pos)],
-                title=f"Test {i+1}: HPC vs AI Comparison",
-                save_name=f'comparison_test_{i+1}.png',
-                show=False
+                hpc_pos, ai_result['positions'][:len(hpc_pos)],
+                title="Test 1: HPC vs AI",
+                save_name='comparison_test_1.png', show=False
             )
             
-            # Error over time
-            pos_rmse_per_step = np.sqrt(np.mean(
-                (ai_result['positions'][:len(hpc_pos)] - hpc_pos) ** 2, 
-                axis=(1, 2)
+            pos_rmse = np.sqrt(np.mean(
+                (ai_result['positions'][:len(hpc_pos)] - hpc_pos) ** 2, axis=(1, 2)
             ))
-            vel_rmse_per_step = np.sqrt(np.mean(
-                (ai_result['velocities'][:len(hpc_vel)] - hpc_vel) ** 2, 
-                axis=(1, 2)
+            vel_rmse = np.sqrt(np.mean(
+                (ai_result['velocities'][:len(hpc_vel)] - hpc_vel) ** 2, axis=(1, 2)
             ))
-            
             visualizer.plot_error_over_time(
-                pos_rmse_per_step,
-                vel_rmse_per_step,
-                title=f"Test {i+1}: Prediction Error Over Time",
-                save_name=f'error_over_time_test_{i+1}.png',
-                show=False
+                pos_rmse, vel_rmse,
+                title="Test 1: Error Over Time",
+                save_name='error_over_time_test_1.png', show=False
             )
+            
+            # Energy Conservation Plot
+            try:
+                from utils.metrics import compute_energy_error
+                pred_energy, _ = compute_energy_error(
+                    ai_result['positions'], ai_result['velocities'], masses
+                )
+                target_energy, _ = compute_energy_error(
+                    hpc_pos, hpc_vel, masses
+                )
+                visualizer.plot_energy_conservation(
+                    target_energy, pred_energy,
+                    title="Test 1: Energy Conservation",
+                    save_name='energy_conservation_test_1.png', show=False
+                )
+            except Exception as e:
+                print(f"    (Could not plot energy: {e})")
     
-    # Aggregate metrics
+    # Aggregate results
     print("\n" + "=" * 60)
     print("EVALUATION RESULTS")
     print("=" * 60)
@@ -189,7 +173,6 @@ def main():
                 avg_metrics[key] = float(np.mean(values))
                 avg_metrics[f'{key}_std'] = float(np.std(values))
     
-    # Print report
     print(f"\nAveraged over {args.n_test_sims} test simulations:")
     print("-" * 40)
     print(f"  Position RMSE:  {avg_metrics.get('position_rmse', 'N/A'):.6e} ± {avg_metrics.get('position_rmse_std', 0):.6e}")
@@ -201,7 +184,7 @@ def main():
     # Save results
     results = {
         'model_path': str(model_path),
-        'model_type': model_type,
+        'model_type': 'gnn',
         'n_test_simulations': args.n_test_sims,
         'n_particles': args.particles,
         'n_steps': args.steps,
@@ -213,8 +196,8 @@ def main():
     with open(results_path, 'w') as f:
         json.dump(results, f, indent=2, default=str)
     
-    print(f"\n  Results saved to: {results_path}")
-    print(f"  Plots saved to:   {output_dir / 'plots'}")
+    print(f"\n  Results: {results_path}")
+    print(f"  Plots:   {output_dir / 'plots'}")
     print("=" * 60)
 
 
