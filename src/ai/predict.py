@@ -39,7 +39,7 @@ class Predictor:
     
     def load_model(self, model_path: str) -> None:
         """Load model weights and normalization stats from checkpoint."""
-        checkpoint = torch.load(model_path, map_location=self.device)
+        checkpoint = torch.load(model_path, map_location=self.device, weights_only=False)
         if 'model_state_dict' in checkpoint:
             self.model.load_state_dict(checkpoint['model_state_dict'])
             # Load normalization stats if available
